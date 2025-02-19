@@ -1,0 +1,265 @@
+using System;
+using System.Management;
+using System.Diagnostics;
+using System.IO;
+using System.Windows.Forms;
+using Microsoft.Win32;
+using System.Security.Cryptography;
+using System.Threading;
+
+namespace USBGuardian
+{
+    static class Program
+    {
+        // 配置文件路径
+        static string configFilePath = "C:\\USBGuardian\\config.json";
+        // 日志文件路径
+        static string logPath = "C:\\USBGuardian\\log.txt";
+        // 记录U盘是否连接的状态
+        static bool usbConnected = false;
+
+        // 配置对象
+        static Configuration config;
+
+        [STAThread]
+        static void Main()
+        {
+            try
+            {
+                // 加载配置
+                LoadConfiguration();
+                // 隐藏控制台窗口
+                HideConsoleWindow();
+                // 设置开机自启
+                SetupAutoStart();
+                // 监听U盘插拔事件
+                WatchUSB();
+                // 监听命令行输入
+                MonitorCMD();
+                // 运行应用程序，保持后台进程
+                Application.Run();
+            }
+            catch (Exception ex)
+            {
+                // 记录主程序中的错误
+                Log("Error in Main: " + ex.Message);
+            }
+        }
+
+        // 加载配置文件
+        static void LoadConfiguration()
+        {
+            try
+            {
+                if (File.Exists(configFilePath))
+                {
+                    // 读取配置文件内容
+                    string json = File.ReadAllText(configFilePath);
+                    // 反序列化为配置对象
+                    config = Newtonsoft.Json.JsonConvert.DeserializeObject<Configuration>(json);
+                }
+                else
+                {
+                    // 如果配置文件不存在，则创建一个新的配置对象并保存
+                    config = new Configuration();
+                    SaveConfiguration();
+                }
+            }
+            catch (Exception ex)
+            {
+                // 记录加载配置文件时的错误
+                Log("Error loading configuration: " + ex.Message);
+            }
+        }
+
+        // 保存配置文件
+        static void SaveConfiguration()
+        {
+            try
+            {
+                // 序列化配置对象为JSON字符串
+                string json = Newtonsoft.Json.JsonConvert.SerializeObject(config, Newtonsoft.Json.Formatting.Indented);
+                // 写入配置文件
+                File.WriteAllText(configFilePath, json);
+            }
+            catch (Exception ex)
+            {
+                // 记录保存配置文件时的错误
+                Log("Error saving configuration: " + ex.Message);
+            }
+        }
+
+        // 设置USB插拔事件监听
+        static void WatchUSB()
+        {
+            try
+            {
+                // 创建WMI监听器，监听U盘的插拔事件
+                ManagementEventWatcher watcher = new ManagementEventWatcher();
+                WqlEventQuery query = new WqlEventQuery("SELECT * FROM Win32_VolumeChangeEvent");
+                watcher.EventArrived += new EventArrivedEventHandler(USBEvent);
+                watcher.Query = query;
+                watcher.Start(); // 启动监听
+            }
+            catch (Exception ex)
+            {
+                // 记录设置监听器时的错误
+                Log("Error setting up USB watcher: " + ex.Message);
+            }
+        }
+
+        // USB事件处理函数
+        static void USBEvent(object sender, EventArrivedEventArgs e)
+        {
+            // 获取事件类型
+            int eventType = int.Parse(e.NewEvent["EventType"].ToString());
+            if (eventType == 2) // 2 表示 U 盘插入
+            {
+                // 获取U盘序列号
+                string serial = GetUSBSerial();
+                if (IsAllowedUSB(serial)) // 判断是否为允许的U盘
+                {
+                    usbConnected = true;
+                    // 记录U盘连接事件
+                    Log("USB Connected: " + serial);
+                }
+            }
+            else if (eventType == 3) // 3 表示 U 盘移除
+            {
+                usbConnected = false;
+                // 记录U盘移除事件
+                Log("USB Disconnected");
+                // 等待10秒，确保U盘没有重新插入
+                Thread.Sleep(10000);
+                if (!usbConnected)
+                {
+                    // 关机
+                    ShutdownPC();
+                }
+            }
+        }
+
+        // 获取当前连接的U盘序列号
+        static string GetUSBSerial()
+        {
+            try
+            {
+                ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT * FROM Win32_DiskDrive WHERE InterfaceType='USB'");
+                foreach (ManagementObject disk in searcher.Get())
+                {
+                    return disk["SerialNumber"]?.ToString().Trim();
+                }
+            }
+            catch (Exception ex)
+            {
+                // 记录获取U盘序列号时的错误
+                Log("Error getting USB serial: " + ex.Message);
+            }
+            return "";
+        }
+
+        // 判断是否为允许的U盘
+        static bool IsAllowedUSB(string serial)
+        {
+            try
+            {
+                if (config != null && config.AllowedUSBs.Contains(serial))
+                {
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                // 记录判断允许U盘时的错误
+                Log("Error checking allowed USB: " + ex.Message);
+            }
+            return false;
+        }
+
+        // 执行立即关机命令
+        static void ShutdownPC()
+        {
+            try
+            {
+                Process.Start("shutdown", "/s /f /t 0");
+            }
+            catch (Exception ex)
+            {
+                // 记录执行关机命令时的错误
+                Log("Error shutting down PC: " + ex.Message);
+            }
+        }
+
+        // 记录日志
+        static void Log(string message)
+        {
+            try
+            {
+                using (StreamWriter sw = new StreamWriter(logPath, true))
+                {
+                    sw.WriteLine(DateTime.Now + ": " + message);
+                }
+            }
+            catch (Exception ex)
+            {
+                // 如果日志记录失败，最后手段是写入控制台
+                Console.WriteLine("Error writing log: " + ex.Message);
+            }
+        }
+
+        // 隐藏程序窗口
+        static void HideConsoleWindow()
+        {
+            var handle = Process.GetCurrentProcess().MainWindowHandle;
+            ShowWindow(handle, 0);
+        }
+
+        // 设置程序开机自启
+        static void SetupAutoStart()
+        {
+            try
+            {
+                string keyName = "USBGuardian";
+                string path = Application.ExecutablePath;
+                RegistryKey key = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
+                key.SetValue(keyName, path);
+            }
+            catch (Exception ex)
+            {
+                // 记录设置开机自启时的错误
+                Log("Error setting up auto start: " + ex.Message);
+            }
+        }
+
+        // 在后台监听CMD输入
+        static void MonitorCMD()
+        {
+            new Thread(() =>
+            {
+                while (true)
+                {
+                    string input = Console.ReadLine();
+                    if (input.Trim() == "Tshine7s")
+                    {
+                        ShowAdminPanel(); // 调出管理员界面
+                    }
+                }
+            }) { IsBackground = true }.Start();
+        }
+
+        // 运行管理员界面
+        static void ShowAdminPanel()
+        {
+            Application.Run(new AdminForm());
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    }
+
+    // 配置类
+    class Configuration
+    {
+        public List<string> AllowedUSBs { get; set; } = new List<string>();
+    }
+}

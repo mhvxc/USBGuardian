@@ -1,0 +1,143 @@
+using System;
+using System.Management;
+using System.Diagnostics;
+using System.IO;
+using System.Windows.Forms;
+using Microsoft.Win32;
+using System.Threading;
+
+namespace USBGuardian
+{
+    static class Program
+    {
+        // 存储允许的U盘序列号的文件路径
+        static string allowedUSBFile = "C:\\USBGuardian\\allowed_usb.txt";
+        // 日志文件路径
+        static string logPath = "C:\\USBGuardian\\log.txt";
+        // 记录U盘是否连接的状态
+        static bool usbConnected = false;
+        
+        [STAThread]
+        static void Main()
+        {
+            HideConsoleWindow(); // 隐藏控制台窗口
+            SetupAutoStart(); // 设置开机自启
+            WatchUSB(); // 监听U盘插拔事件
+            MonitorCMD(); // 监听命令行输入
+            Application.Run(); // 运行应用程序，保持后台进程
+        }
+
+        static void WatchUSB()
+        {
+            // 创建WMI监听器，监听U盘的插拔事件
+            ManagementEventWatcher watcher = new ManagementEventWatcher();
+            WqlEventQuery query = new WqlEventQuery("SELECT * FROM Win32_VolumeChangeEvent");
+            watcher.EventArrived += new EventArrivedEventHandler(USBEvent);
+            watcher.Query = query;
+            watcher.Start(); // 启动监听
+        }
+
+        static void USBEvent(object sender, EventArrivedEventArgs e)
+        {
+            int eventType = int.Parse(e.NewEvent["EventType"].ToString());
+            if (eventType == 2) // 2 表示 U 盘插入
+            {
+                string serial = GetUSBSerial(); // 获取U盘序列号
+                if (IsAllowedUSB(serial)) // 判断是否为允许的U盘
+                {
+                    usbConnected = true;
+                    Log("USB Connected: " + serial);
+                }
+            }
+            else if (eventType == 3) // 3 表示 U 盘移除
+            {
+                usbConnected = false;
+                Log("USB Disconnected");
+                Thread.Sleep(10000); // 等待10秒，确保U盘没有重新插入
+                if (!usbConnected)
+                {
+                    ShutdownPC(); // 关机
+                }
+            }
+        }
+
+        static string GetUSBSerial()
+        {
+            // 获取当前连接的U盘序列号
+            ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT * FROM Win32_DiskDrive WHERE InterfaceType='USB'");
+            foreach (ManagementObject disk in searcher.Get())
+            {
+                return disk["SerialNumber"]?.ToString().Trim();
+            }
+            return "";
+        }
+
+        static bool IsAllowedUSB(string serial)
+        {
+            // 读取存储的允许U盘序列号列表，检查当前U盘是否被允许
+            if (File.Exists(allowedUSBFile))
+            {
+                string[] allowedUSBs = File.ReadAllLines(allowedUSBFile);
+                foreach (string allowed in allowedUSBs)
+                {
+                    if (serial == allowed.Trim())
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        static void ShutdownPC()
+        {
+            // 执行立即关机命令
+            Process.Start("shutdown", "/s /f /t 0");
+        }
+
+        static void Log(string message)
+        {
+            // 记录日志
+            File.AppendAllText(logPath, DateTime.Now + ": " + message + "\n");
+        }
+
+        static void HideConsoleWindow()
+        {
+            // 隐藏程序窗口
+            var handle = Process.GetCurrentProcess().MainWindowHandle;
+            ShowWindow(handle, 0);
+        }
+
+        static void SetupAutoStart()
+        {
+            // 设置程序开机自启
+            string keyName = "USBGuardian";
+            string path = Application.ExecutablePath;
+            RegistryKey key = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
+            key.SetValue(keyName, path);
+        }
+
+        static void MonitorCMD()
+        {
+            // 在后台监听CMD输入
+            new Thread(() =>
+            {
+                while (true)
+                {
+                    string input = Console.ReadLine();
+                    if (input.Trim() == "Tshine7s")
+                    {
+                        ShowAdminPanel(); // 调出管理员界面
+                    }
+                }
+            }) { IsBackground = true }.Start();
+        }
+
+        static void ShowAdminPanel()
+        {
+            // 运行管理员界面
+            Application.Run(new AdminForm());
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    }
+}
