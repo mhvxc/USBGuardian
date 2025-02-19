@@ -1,331 +1,379 @@
 using System;
-
-using System.Management;
-
-using System.Diagnostics;
-
+using System.Drawing;
+using System.Collections.Generic;
 using System.IO;
-
 using System.Windows.Forms;
-
-using Microsoft.Win32;
-
-using System.Security.Cryptography;
-
+using Newtonsoft.Json;
 using System.Threading;
-
-
+using System.Security.Cryptography;
+using System.Threading.Tasks;
 
 namespace USBGuardian
-
 {
-
-    static class Program
-
+    // 配置类，用于保存允许的USB序列号
+    public class Configuration
     {
+        public List<string> AllowedUSBs { get; set; } = new List<string>(); // 存储允许的USB序列号
+    }
 
-        // 配置文件路径
+    public partial class MainForm : Form
+    {
+        private static Configuration config;
+        private static string configFilePath;
+        private static string logFilePath;
+        private static string usbSerial;
 
-        static string configFilePath = "C:\\USBGuardian\\config.json";
-
-        // 日志文件路径
-
-        static string logPath = "C:\\USBGuardian\\log.txt";
-
-        // 记录U盘是否连接的状态
-
-        static bool usbConnected = false;
-
-
-
-        // 配置对象
-
-        static Configuration config;
-
-
-
-        [STAThread]
-
-        static void Main()
-
+        public MainForm()
         {
-
-            try
-
-            {
-
-                // 加载配置
-
-                LoadConfiguration();
-
-                // 隐藏控制台窗口
-
-                HideConsoleWindow();
-
-                // 设置开机自启
-
-                SetupAutoStart();
-
-                // 监听U盘插拔事件
-
-                WatchUSB();
-
-                // 监听命令行输入
-
-                MonitorCMD();
-
-                // 运行应用程序，保持后台进程
-
-                Application.Run();
-
-            }
-
-            catch (Exception ex)
-
-            {
-
-                // 记录主程序中的错误
-
-                Log("Error in Main: " + ex.Message);
-
-            }
-
+            InitializeComponent();
+            InitializePaths();
+            InitializeUI();
+            AdjustWindowSizeAndPosition();
+            LoadConfiguration(); // 加载配置
         }
 
+        // 初始化路径
+        private void InitializePaths()
+        {
+            string appDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "USBGuardian");
+            if (!Directory.Exists(appDataPath))
+            {
+                Directory.CreateDirectory(appDataPath);
+            }
 
+            configFilePath = Path.Combine(appDataPath, "config.json");
+            logFilePath = Path.Combine(appDataPath, "log.txt");
+        }
+
+        // 初始化UI元素
+        private void InitializeUI()
+        {
+            this.Text = "USB Guardian";
+
+            Label statusLabel = new Label()
+            {
+                Text = "USB Status: Not Connected",
+                AutoSize = true,
+                Location = new Point(20, 20)
+            };
+            this.Controls.Add(statusLabel);
+
+            Button startButton = new Button()
+            {
+                Text = "Start Monitoring",
+                Location = new Point(20, 60)
+            };
+            startButton.Click += (sender, e) => StartMonitoring();
+            this.Controls.Add(startButton);
+
+            Button configButton = new Button()
+            {
+                Text = "Open Configuration",
+                Location = new Point(160, 60)
+            };
+            configButton.Click += (sender, e) => OpenConfigWindow();
+            this.Controls.Add(configButton);
+
+            Button loginButton = new Button()
+            {
+                Text = "Admin Login",
+                Location = new Point(300, 60)
+            };
+            loginButton.Click += (sender, e) => AdminLogin();
+            this.Controls.Add(loginButton);
+        }
+
+        // 开始监控
+        private async void StartMonitoring()
+        {
+            // 启动USB监控的异步操作
+            await Task.Run(() => MonitorUSB());
+        }
+
+        // 打开配置窗口
+        private void OpenConfigWindow()
+        {
+            ConfigWindow configWindow = new ConfigWindow();
+            configWindow.ShowDialog();
+        }
+
+        // 管理员登录
+        private void AdminLogin()
+        {
+            LoginWindow loginWindow = new LoginWindow();
+            loginWindow.ShowDialog();
+        }
+
+        // 调整窗口大小和位置，使其居中并占屏幕的40%
+        private void AdjustWindowSizeAndPosition()
+        {
+            Rectangle screenBounds = Screen.PrimaryScreen.Bounds;
+            int windowWidth = (int)(screenBounds.Width * 0.4);
+            int windowHeight = (int)(screenBounds.Height * 0.4);
+            this.ClientSize = new Size(windowWidth, windowHeight);
+            int x = (screenBounds.Width - windowWidth) / 2;
+            int y = (screenBounds.Height - windowHeight) / 2;
+            this.Location = new Point(x, y);
+        }
 
         // 加载配置文件
-
-        static void LoadConfiguration()
-
+        private static void LoadConfiguration()
         {
-
             try
-
             {
-
                 if (File.Exists(configFilePath))
-
                 {
-
-                    // 读取配置文件内容
-
                     string json = File.ReadAllText(configFilePath);
-
-                    // 反序列化为配置对象
-
-                    config = Newtonsoft.Json.JsonConvert.DeserializeObject<Configuration>(json);
-
+                    config = JsonConvert.DeserializeObject<Configuration>(json);
                 }
-
                 else
-
                 {
-
-                    // 如果配置文件不存在，则创建一个新的配置对象并保存
-
                     config = new Configuration();
-
-                    SaveConfiguration();
-
+                    SaveConfiguration(); // 如果没有配置文件，创建并保存一个默认的配置文件
                 }
-
             }
-
             catch (Exception ex)
-
             {
-
-                // 记录加载配置文件时的错误
-
-                Log("Error loading configuration: " + ex.Message);
-
+                LogError($"Error loading configuration: {ex.Message}");
             }
-
         }
-
-
 
         // 保存配置文件
-
-        static void SaveConfiguration()
-
+        private static void SaveConfiguration()
         {
-
             try
-
             {
-
-                // 序列化配置对象为JSON字符串
-
-                string json = Newtonsoft.Json.JsonConvert.SerializeObject(config, Newtonsoft.Json.Formatting.Indented);
-
-                // 写入配置文件
-
+                string json = JsonConvert.SerializeObject(config, Formatting.Indented);
                 File.WriteAllText(configFilePath, json);
-
             }
-
             catch (Exception ex)
-
             {
-
-                // 记录保存配置文件时的错误
-
-                Log("Error saving configuration: " + ex.Message);
-
+                LogError($"Error saving configuration: {ex.Message}");
             }
-
         }
 
-
-
-        // 设置USB插拔事件监听
-
-        static void WatchUSB()
-
+        // 错误日志记录
+        private static void LogError(string message)
         {
-
             try
-
             {
-
-                // 创建WMI监听器，监听U盘的插拔事件
-
-                ManagementEventWatcher watcher = new ManagementEventWatcher();
-
-                WqlEventQuery query = new WqlEventQuery("SELECT * FROM Win32_VolumeChangeEvent");
-
-                watcher.EventArrived += new EventArrivedEventHandler(USBEvent);
-
-                watcher.Query = query;
-
-                watcher.Start(); // 启动监听
-
+                File.AppendAllText(logFilePath, DateTime.Now.ToString() + ": " + message + Environment.NewLine);
             }
-
             catch (Exception ex)
-
             {
-
-                // 记录设置监听器时的错误
-
-                Log("Error setting up USB watcher: " + ex.Message);
-
+                // 如果日志记录失败，则输出到控制台
+                Console.WriteLine($"Error logging: {ex.Message}");
             }
-
         }
 
-
-
-        // USB事件处理函数
-
-        static void USBEvent(object sender, EventArrivedEventArgs e)
-
+        // USB 监控
+        private static void MonitorUSB()
         {
-
-            // 获取事件类型
-
-            int eventType = int.Parse(e.NewEvent["EventType"].ToString());
-
-            if (eventType == 2) // 2 表示 U 盘插入
-
-            {
-
-                // 获取U盘序列号
-
-                string serial = GetUSBSerial();
-
-                if (IsAllowedUSB(serial)) // 判断是否为允许的U盘
-
-                {
-
-                    usbConnected = true;
-
-                    // 记录U盘连接事件
-
-                    Log("USB Connected: " + serial);
-
-                }
-
-            }
-
-            else if (eventType == 3) // 3 表示 U 盘移除
-
-            {
-
-                usbConnected = false;
-
-                // 记录U盘移除事件
-
-                Log("USB Disconnected");
-
-                // 等待10秒，确保U盘没有重新插入
-
-                Thread.Sleep(10000);
-
-                if (!usbConnected)
-
-                {
-
-                    // 关机
-
-                    ShutdownPC();
-
-                }
-
-            }
-
-        }
-
-
-
-        // 获取当前连接的U盘序列号
-
-        static string GetUSBSerial()
-
-        {
-
             try
-
             {
-
-                ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT * FROM Win32_DiskDrive WHERE InterfaceType='USB'");
-
-                foreach (ManagementObject disk in searcher.Get())
-
+                // 模拟USB监控逻辑
+                while (true)
                 {
-
-                    return disk["SerialNumber"]?.ToString().Trim();
-
+                    Thread.Sleep(1000); // 模拟延迟
+                    if (usbSerial != null)
+                    {
+                        // 检查USB序列号是否在允许列表中
+                        if (config.AllowedUSBs.Contains(usbSerial))
+                        {
+                            LogError($"USB {usbSerial} connected and allowed.");
+                        }
+                        else
+                        {
+                            LogError($"USB {usbSerial} connected but not allowed.");
+                            ShutdownPC(); // 非允许设备拔出，关机
+                        }
+                    }
                 }
-
             }
-
             catch (Exception ex)
-
             {
-
-                // 记录获取U盘序列号时的错误
-
-                Log("Error getting USB serial: " + ex.Message);
-
+                LogError($"Error monitoring USB: {ex.Message}");
             }
-
-            return "";
-
         }
 
-
-
-        // 判断是否为允许的U盘
-
-        static bool IsAllowedUSB(string serial)
-
+        // 关机
+        private static void ShutdownPC()
         {
-
             try
-
             {
+                // 延迟关机
+                Thread.Sleep(10000); // 等待10秒
+                // 执行关机命令
+                Process.Start("shutdown", "/s /f /t 0");
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error shutting down: {ex.Message}");
+            }
+        }
+    }
 
-                i
+    // 配置窗口
+    public class ConfigWindow : Form
+    {
+        private ListBox allowedUSBListBox;
+        private Button addButton;
+
+        public ConfigWindow()
+        {
+            this.Text = "USB Guardian Configuration";
+            this.Width = 400;
+            this.Height = 300;
+
+            allowedUSBListBox = new ListBox()
+            {
+                Location = new Point(20, 20),
+                Width = 340,
+                Height = 150
+            };
+            this.Controls.Add(allowedUSBListBox);
+
+            addButton = new Button()
+            {
+                Text = "Add USB",
+                Location = new Point(20, 200)
+            };
+            addButton.Click += (sender, e) => AddUSB();
+            this.Controls.Add(addButton);
+
+            LoadUSBs(); // 加载配置中的USB序列号
+        }
+
+        // 加载配置中的USB序列号
+        private void LoadUSBs()
+        {
+            allowedUSBListBox.Items.Clear();
+            foreach (var usbSerial in MainForm.config.AllowedUSBs)
+            {
+                allowedUSBListBox.Items.Add(usbSerial);
+            }
+        }
+
+        // 添加USB序列号
+        private void AddUSB()
+        {
+            string usbSerial = Microsoft.VisualBasic.Interaction.InputBox("Enter USB Serial Number:", "Add USB", "");
+            if (!string.IsNullOrEmpty(usbSerial))
+            {
+                if (!MainForm.config.AllowedUSBs.Contains(usbSerial))
+                {
+                    MainForm.config.AllowedUSBs.Add(usbSerial);
+                    allowedUSBListBox.Items.Add(usbSerial);
+                    MainForm.SaveConfiguration(); // 保存配置
+                }
+                else
+                {
+                    MessageBox.Show("This USB serial number is already added.");
+                }
+            }
+        }
+    }
+
+    // 登录窗口
+    public class LoginWindow : Form
+    {
+        public LoginWindow()
+        {
+            InitializeComponent();
+        }
+
+        private void InitializeComponent()
+        {
+            this.Text = "Admin Login";
+            this.Width = 300;
+            this.Height = 200;
+
+            Label usernameLabel = new Label()
+            {
+                Text = "Username:",
+                Location = new Point(20, 30),
+                AutoSize = true
+            };
+            this.Controls.Add(usernameLabel);
+
+            TextBox usernameTextBox = new TextBox()
+            {
+                Location = new Point(100, 30),
+                Width = 150
+            };
+            this.Controls.Add(usernameTextBox);
+
+            Label passwordLabel = new Label()
+            {
+                Text = "Password:",
+                Location = new Point(20, 70),
+                AutoSize = true
+            };
+            this.Controls.Add(passwordLabel);
+
+            TextBox passwordTextBox = new TextBox()
+            {
+                Location = new Point(100, 70),
+                Width = 150,
+                UseSystemPasswordChar = true
+            };
+            this.Controls.Add(passwordTextBox);
+
+            Button loginButton = new Button()
+            {
+                Text = "Login",
+                Location = new Point(100, 110)
+            };
+            loginButton.Click += (sender, e) =>
+            {
+                string username = usernameTextBox.Text;
+                string password = passwordTextBox.Text;
+                if (ValidateLogin(username, password))
+                {
+                    MessageBox.Show("Login successful.");
+                    this.Close();
+                }
+                else
+                {
+                    MessageBox.Show("Invalid login.");
+                }
+            };
+            this.Controls.Add(loginButton);
+        }
+
+        // 验证登录
+        private bool ValidateLogin(string username, string password)
+        {
+            string hashedPassword = HashPassword("123456"); // 加密的密码
+            return username == "admin" && VerifyPassword(password, hashedPassword);
+        }
+
+        // 哈希密码
+        private string HashPassword(string password)
+        {
+            using (SHA256 sha256 = SHA256.Create())
+            {
+                byte[] hashBytes = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(password));
+                return Convert.ToBase64String(hashBytes);
+            }
+        }
+
+        // 验证密码
+        private bool VerifyPassword(string inputPassword, string storedHash)
+        {
+            string inputHash = HashPassword(inputPassword);
+            return inputHash == storedHash;
+        }
+    }
+
+    static class Program
+    {
+        [STAThread]
+        static void Main()
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new MainForm());
+        }
+    }
+}
